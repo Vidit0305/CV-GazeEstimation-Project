@@ -88,7 +88,15 @@ class GazeRegressor:
             return False
         try:
             with open(file_path, "rb") as f:
-                self.model = pickle.load(f)
+                loaded_model = pickle.load(f)
+
+            expected_dim = len(config.FEATURE_NAMES)
+            if hasattr(loaded_model, "n_features_in_") and loaded_model.n_features_in_ != expected_dim:
+                print(f"[WARNING] Saved model expects {loaded_model.n_features_in_} features, but current model uses {expected_dim} features.")
+                print("[INFO] Outdated model file will be replaced after new calibration.")
+                return False
+
+            self.model = loaded_model
             self.is_trained = True
             print(f"[INFO] Gaze model loaded from {file_path}")
             return True

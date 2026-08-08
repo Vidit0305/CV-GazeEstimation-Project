@@ -212,6 +212,13 @@ class CalibrationManager:
         if len(X) == 0 or len(Y) == 0:
             return None
 
+        # Validate feature vector dimension
+        expected_dim = len(config.FEATURE_NAMES)
+        if X.ndim < 2 or X.shape[1] != expected_dim:
+            print(f"[WARNING] Saved calibration features dimension ({X.shape[1] if X.ndim > 1 else 'invalid'}) does not match current model expected features ({expected_dim}).")
+            print("[INFO] Outdated calibration file will be ignored and replaced with fresh calibration.")
+            return None
+
         return X, Y
 
 

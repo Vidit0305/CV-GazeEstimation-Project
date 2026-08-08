@@ -1,0 +1,20 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Data & Model Artifacts
+data/calibration.json
+models/gaze_model.pkl
+
+# Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+
+# IDE & OS configuration
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
