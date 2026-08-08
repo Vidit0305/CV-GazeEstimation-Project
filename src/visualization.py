@@ -1,19 +1,56 @@
 """
 Visualization and Debug HUD Module.
 Provides dual visual displays:
-1. GazeVisualizer: Pygame screen window showing smooth gaze circle movement.
+1. GazeVisualizer: Transparent desktop overlay Pygame window showing gaze circle movement over your real laptop screen.
 2. DebugHUD: OpenCV webcam feed overlay showing facial landmarks, head pose axes, FPS, and tracking metrics.
 """
 
+import sys
+import ctypes
 import cv2
 import numpy as np
 import pygame
 import config
 from src.utils import draw_text_with_bg
 
+# Transparent ColorKey RGB (mapped to 100% invisible on Windows)
+TRANSPARENT_COLORKEY = (1, 1, 1)
+
+
+def set_window_transparent_and_topmost(click_through: bool = True) -> bool:
+    """
+    Configures Pygame window on Windows to be 100% transparent background,
+    top-most above all desktop windows, and optionally click-through.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        hwnd = pygame.display.get_wm_info().get("window")
+        if not hwnd:
+            return False
+
+        GWL_EXSTYLE = -20
+        WS_EX_LAYERED = 0x80000
+        WS_EX_TOPMOST = 0x8
+        WS_EX_TRANSPARENT = 0x20
+        LWA_COLORKEY = 0x1
+
+        style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        new_style = style | WS_EX_LAYERED | WS_EX_TOPMOST
+        if click_through:
+            new_style |= WS_EX_TRANSPARENT
+
+        ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, new_style)
+        # COLORREF 0x00010101 maps to RGB (1, 1, 1)
+        ctypes.windll.user32.SetLayeredWindowAttributes(hwnd, 0x00010101, 0, LWA_COLORKEY)
+        return True
+    except Exception as e:
+        print(f"[WARNING] Could not configure transparent desktop overlay: {e}")
+        return False
+
 
 class GazeVisualizer:
-    """Renders the screen gaze target window with Pygame."""
+    """Renders transparent screen gaze target overlay directly on top of your laptop desktop."""
 
     def __init__(self, screen_w: int, screen_h: int):
         self.screen_w = screen_w
@@ -22,14 +59,18 @@ class GazeVisualizer:
         self.is_active = False
 
     def init_window(self) -> None:
-        """Initializes the Pygame visualization display surface."""
+        """Initializes Pygame transparent desktop overlay surface."""
         if not self.is_active:
             pygame.init()
             self.surface = pygame.display.set_mode(
                 (self.screen_w, self.screen_h),
                 pygame.NOFRAME | pygame.DOUBLEBUF
             )
-            pygame.display.set_caption("AI Eye Gaze Tracker - Screen Visualization")
+            pygame.display.set_caption("AI Eye Gaze Tracker - Transparent Overlay")
+
+            # Enable Windows desktop window transparency & click-through
+            set_window_transparent_and_topmost(click_through=True)
+
             self.font_dir = pygame.font.SysFont("arial", 20, bold=True)
             self.font_info = pygame.font.SysFont("consolas", 14)
             self.is_active = True
@@ -42,8 +83,8 @@ class GazeVisualizer:
         tracking_active: bool
     ) -> bool:
         """
-        Renders gaze circle target on screen.
-        Returns False if user requested quit (key press Q/ESC or close button).
+        Renders gaze circle target directly over your laptop desktop screen.
+        Returns False if user requested quit.
         """
         if not self.is_active or self.surface is None:
             return True
@@ -56,34 +97,23 @@ class GazeVisualizer:
                 if event.key in (pygame.K_ESCAPE, pygame.K_q):
                     return False
 
-        # Fill background
-        self.surface.fill(config.BG_COLOR)
+        # Fill with Transparent ColorKey (Makes background 100% invisible on desktop)
+        self.surface.fill(TRANSPARENT_COLORKEY)
 
         x, y = gaze_px
         x = int(np.clip(x, 15, self.screen_w - 15))
         y = int(np.clip(y, 15, self.screen_h - 15))
 
         if tracking_active:
-            # Draw Gaze Circle Indicator with glowing outer aura
+            # Draw Gaze Circle Indicator over your desktop
             pygame.draw.circle(self.surface, (0, 180, 255), (x, y), config.DOT_RADIUS + 6, width=2)
             pygame.draw.circle(self.surface, config.DOT_COLOR, (x, y), config.DOT_RADIUS)
             pygame.draw.circle(self.surface, config.DOT_BORDER_COLOR, (x, y), 4)
 
-            # Draw subtle crosshair lines
-            line_color = (40, 50, 75)
-            pygame.draw.line(self.surface, line_color, (x - 20, y), (x + 20, y), 1)
-            pygame.draw.line(self.surface, line_color, (x, y - 20), (x, y + 20), 1)
-        else:
-            # Render Tracking Lost Warning
-            txt_lost = self.font_dir.render("TRACKING LOST — Look at webcam", True, (255, 90, 90))
-            self.surface.blit(txt_lost, (self.screen_w // 2 - txt_lost.get_width() // 2, self.screen_h // 2))
-
-        # Bottom Status Bar
-        txt_hud = self.font_info.render(
-            f"Gaze Direction: {direction_text}  |  Confidence: {confidence:.1f}%  |  Press Q in OpenCV window to Quit",
-            True, (140, 155, 180)
-        )
-        self.surface.blit(txt_hud, (20, self.screen_h - 30))
+            # Draw crosshair lines
+            line_color = (255, 255, 255)
+            pygame.draw.line(self.surface, line_color, (x - 18, y), (x + 18, y), 1)
+            pygame.draw.line(self.surface, line_color, (x, y - 18), (x, y + 18), 1)
 
         pygame.display.flip()
         return True
