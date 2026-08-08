@@ -1,0 +1,13 @@
+# Core Machine Vision & Landmark Detection
+opencv-python>=4.8.0
+mediapipe>=0.10.0
+
+# Mathematical Computing & Data Science
+numpy>=1.24.0
+scipy>=1.10.0
+
+# Machine Learning & Regression
+scikit-learn>=1.3.0
+
+# Screen Graphics & Interactive Visualization Window
+pygame>=2.5.0
