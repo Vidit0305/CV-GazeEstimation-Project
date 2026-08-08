@@ -1,7 +1,7 @@
 """
 9-Point Interactive Calibration System.
-Displays calibration targets across screen, collects sample 10D feature vectors,
-performs outlier filtering, and saves calibration dataset to local storage.
+Displays calibration targets across screen, renders live mini camera preview in the corner,
+collects sample 10D feature vectors, performs outlier filtering, and saves calibration dataset.
 """
 
 import time
@@ -37,7 +37,7 @@ class CalibrationManager:
         head_pose_estimator
     ) -> tuple[np.ndarray, np.ndarray] | None:
         """
-        Executes interactive 9-point calibration routine.
+        Executes interactive 9-point calibration routine with live mini camera feed preview.
         Returns (features_X, targets_Y) arrays, or None if cancelled.
         """
         pygame.init()
@@ -55,7 +55,13 @@ class CalibrationManager:
 
         total_points = len(config.CALIBRATION_GRID)
 
-        print("[CALIBRATION] Starting interactive 9-point calibration...")
+        print("[CALIBRATION] Starting interactive 9-point calibration with live camera preview...")
+
+        # Mini Camera Preview dimensions (Bottom-Right Corner)
+        cam_preview_w = 260
+        cam_preview_h = 146
+        cam_preview_x = self.screen_w - cam_preview_w - 20
+        cam_preview_y = self.screen_h - cam_preview_h - 20
 
         for idx, (rel_x, rel_y) in enumerate(config.CALIBRATION_GRID, start=1):
             target_x = int(rel_x * self.screen_w)
@@ -78,7 +84,8 @@ class CalibrationManager:
                 if not ret or frame is None:
                     continue
 
-                # Extract features
+                # Extract features & draw debug landmarks on frame for preview
+                preview_frame = frame.copy()
                 face_data = face_tracker.process_frame(frame)
                 feature_vec = None
                 tracking_valid = False
@@ -86,10 +93,15 @@ class CalibrationManager:
                 if face_data is not None:
                     lm2d = face_data["landmarks_2d"]
                     eye_data = eye_tracker.process_eyes(lm2d)
+                    iris_data = iris_tracker.process_irises(lm2d)
+                    pose_data = head_pose_estimator.estimate_pose(lm2d, face_data["frame_size"])
+
+                    # Draw landmarks on mini camera preview
+                    eye_tracker.draw_eye_contours(preview_frame, eye_data, color=(0, 255, 200), thickness=1)
+                    iris_tracker.draw_irises(preview_frame, iris_data, color=(0, 255, 255), center_color=(0, 0, 255))
+                    head_pose_estimator.draw_pose_axes(preview_frame, pose_data)
+
                     if eye_data["eyes_open"]:
-                        iris_data = iris_tracker.process_irises(lm2d)
-                        pose_data = head_pose_estimator.estimate_pose(lm2d, face_data["frame_size"])
-                        
                         l_x = iris_data["left_iris_x"]
                         l_y = iris_data["left_iris_y"]
                         r_x = iris_data["right_iris_x"]
@@ -148,6 +160,20 @@ class CalibrationManager:
                 status_color = (0, 230, 180) if tracking_valid else (255, 90, 90)
                 txt_status = font_status.render(status_str, True, status_color)
                 surface.blit(txt_status, (self.screen_w // 2 - txt_status.get_width() // 2, bar_y - 30))
+
+                # RENDER MINI LIVE CAMERA PREVIEW IN BOTTOM-RIGHT CORNER
+                resized_cam = cv2.resize(preview_frame, (cam_preview_w, cam_preview_h))
+                cam_rgb = cv2.cvtColor(resized_cam, cv2.COLOR_BGR2RGB)
+                # Convert numpy array to Pygame Surface
+                cam_surface = pygame.image.frombuffer(cam_rgb.tobytes(), (cam_preview_w, cam_preview_h), "RGB")
+                
+                # Blit camera preview & draw sleek border
+                surface.blit(cam_surface, (cam_preview_x, cam_preview_y))
+                pygame.draw.rect(surface, (0, 200, 255), (cam_preview_x, cam_preview_y, cam_preview_w, cam_preview_h), width=2, border_radius=4)
+                
+                # Camera preview title
+                txt_cam_label = font_status.render("LIVE CAMERA", True, (0, 220, 255))
+                surface.blit(txt_cam_label, (cam_preview_x + 8, cam_preview_y + 6))
 
                 pygame.display.flip()
                 clock.tick(60)
