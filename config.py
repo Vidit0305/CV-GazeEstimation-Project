@@ -75,11 +75,11 @@ BG_COLOR = (12, 14, 20)          # Dark modern theme
 GAZE_TRAIL_LENGTH = 10           # Smooth trailing tail behind gaze point
 
 # Picture-in-Picture (PiP) Live Camera Settings
-ENABLE_CAMERA_PIP = True         # Show webcam window preview on desktop overlay
+ENABLE_CAMERA_PIP = False        # Disabled by default on screen overlay (toggle on/off anytime with 'P')
 PIP_WIDTH = 260                  # Width of PiP camera feed in pixels
 PIP_HEIGHT = 146                 # Height of PiP camera feed in pixels (16:9 aspect)
 PIP_POSITION = "bottom_right"    # "bottom_right", "top_right", "bottom_left", "top_left"
-PIP_PADDING = 20
+PIP_PADDING = 16
 
 # Video Session Recording Settings
 RECORDING_FPS = 30

@@ -7,6 +7,7 @@ Provides dual visual displays:
    recording status, and tracking metrics.
 """
 
+import os
 import sys
 import time
 import ctypes
@@ -19,26 +20,35 @@ from src.utils import draw_text_with_bg
 # Transparent ColorKey RGB (mapped to 100% invisible on Windows)
 TRANSPARENT_COLORKEY = (1, 1, 1)
 
+# Win32 Constants for Always-On-Top Layered Window
+HWND_TOPMOST = -1
+SWP_NOSIZE = 0x0001
+SWP_NOMOVE = 0x0002
+SWP_NOACTIVATE = 0x0010
+SWP_SHOWWINDOW = 0x0040
+SWP_FRAMECHANGED = 0x0020
 
-def set_window_transparent_and_topmost(click_through: bool = True) -> bool:
+
+def set_window_transparent_and_topmost(screen_w: int, screen_h: int, click_through: bool = True) -> int | None:
     """
     Configures Pygame window on Windows to be 100% transparent background,
-    top-most above all desktop windows, tool-window (no taskbar clutter), and optionally click-through.
+    pinned to HWND_TOPMOST above all opened apps/browsers, tool-window (no taskbar clutter),
+    and fully click-through.
     """
     if sys.platform != "win32":
-        return False
+        return None
     try:
         hwnd = pygame.display.get_wm_info().get("window")
         if not hwnd:
-            return False
+            return None
 
         GWL_EXSTYLE = -20
-        WS_EX_LAYERED = 0x80000
-        WS_EX_TOPMOST = 0x8
-        WS_EX_TRANSPARENT = 0x20
-        WS_EX_TOOLWINDOW = 0x80
+        WS_EX_LAYERED = 0x00080000
+        WS_EX_TOPMOST = 0x00000008
+        WS_EX_TRANSPARENT = 0x00000020
+        WS_EX_TOOLWINDOW = 0x00000080
         WS_EX_NOACTIVATE = 0x08000000
-        LWA_COLORKEY = 0x1
+        LWA_COLORKEY = 0x00000001
 
         style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
         new_style = style | WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
@@ -48,10 +58,18 @@ def set_window_transparent_and_topmost(click_through: bool = True) -> bool:
         ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, new_style)
         # COLORREF 0x00010101 maps to RGB (1, 1, 1)
         ctypes.windll.user32.SetLayeredWindowAttributes(hwnd, 0x00010101, 0, LWA_COLORKEY)
-        return True
+
+        # Force window to top of all desktop windows and position at (0,0) with exact full screen size
+        ctypes.windll.user32.SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            0, 0, screen_w, screen_h,
+            SWP_SHOWWINDOW | SWP_NOACTIVATE | SWP_FRAMECHANGED
+        )
+        return hwnd
     except Exception as e:
         print(f"[WARNING] Could not configure transparent desktop overlay: {e}")
-        return False
+        return None
 
 
 class GazeVisualizer:
@@ -61,7 +79,9 @@ class GazeVisualizer:
         self.screen_w = screen_w
         self.screen_h = screen_h
         self.surface = None
+        self.hwnd = None
         self.is_active = False
+        self.render_frame_count = 0
 
         # Gaze trail history
         self.gaze_trail = []
@@ -80,6 +100,7 @@ class GazeVisualizer:
     def init_window(self) -> None:
         """Initializes Pygame transparent desktop overlay surface."""
         if not self.is_active:
+            os.environ['SDL_VIDEO_WINDOW_POS'] = '0,0'
             pygame.init()
             self.surface = pygame.display.set_mode(
                 (self.screen_w, self.screen_h),
@@ -87,8 +108,8 @@ class GazeVisualizer:
             )
             pygame.display.set_caption("AI Eye Gaze Tracker - Transparent Desktop Overlay")
 
-            # Enable Windows desktop window transparency & click-through
-            set_window_transparent_and_topmost(click_through=True)
+            # Enable Windows desktop window transparency & lock topmost z-order
+            self.hwnd = set_window_transparent_and_topmost(self.screen_w, self.screen_h, click_through=True)
 
             self.font_rec = pygame.font.SysFont("arial", 15, bold=True)
             self.font_pip = pygame.font.SysFont("consolas", 12, bold=True)
@@ -127,6 +148,19 @@ class GazeVisualizer:
                     return False
                 elif event.key == pygame.K_p:
                     self.toggle_pip()
+
+        # Periodically enforce HWND_TOPMOST so overlay never gets obscured behind active apps/browsers
+        self.render_frame_count += 1
+        if sys.platform == "win32" and self.hwnd and (self.render_frame_count % 15 == 0):
+            try:
+                ctypes.windll.user32.SetWindowPos(
+                    self.hwnd,
+                    HWND_TOPMOST,
+                    0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+                )
+            except Exception:
+                pass
 
         # Fill with Transparent ColorKey (Makes background 100% invisible on desktop)
         self.surface.fill(TRANSPARENT_COLORKEY)
@@ -193,16 +227,17 @@ class GazeVisualizer:
     ) -> None:
         """Renders live webcam feed inside desktop overlay surface."""
         pw, ph = self.pip_w, self.pip_h
-        pad = self.pip_pad
+        pad_x = self.pip_pad
+        pad_y = self.pip_pad + 35  # Account for taskbar at bottom
 
         if self.pip_pos == "bottom_right":
-            px, py = self.screen_w - pw - pad, self.screen_h - ph - pad
+            px, py = self.screen_w - pw - pad_x, self.screen_h - ph - pad_y
         elif self.pip_pos == "top_right":
-            px, py = self.screen_w - pw - pad, pad + 40
+            px, py = self.screen_w - pw - pad_x, pad_x + 40
         elif self.pip_pos == "bottom_left":
-            px, py = pad, self.screen_h - ph - pad
+            px, py = pad_x, self.screen_h - ph - pad_y
         else:
-            px, py = pad, pad + 40
+            px, py = pad_x, pad_x + 40
 
         try:
             # Resize and convert OpenCV BGR frame to Pygame RGB

@@ -2,9 +2,11 @@
 Utility Functions and Helpers for AI Eye Gaze Tracker.
 """
 
+import sys
+import os
 import time
 import json
-import os
+import ctypes
 import cv2
 import numpy as np
 
@@ -41,9 +43,22 @@ class FPSCounter:
 
 def get_screen_resolution() -> tuple[int, int]:
     """
-    Detects the primary display monitor resolution.
-    Uses tkinter or fallback defaults.
+    Detects the true physical primary display monitor resolution.
+    Applies Windows DPI-awareness to ensure accurate 1:1 pixel mapping across all applications.
     """
+    if sys.platform == "win32":
+        try:
+            try:
+                ctypes.windll.shcore.SetProcessDpiAwareness(2)  # Per-monitor DPI aware
+            except Exception:
+                ctypes.windll.user32.SetProcessDPIAware()
+            width = ctypes.windll.user32.GetSystemMetrics(0)   # SM_CXSCREEN
+            height = ctypes.windll.user32.GetSystemMetrics(1)  # SM_CYSCREEN
+            if width > 0 and height > 0:
+                return width, height
+        except Exception:
+            pass
+
     try:
         import tkinter as tk
         root = tk.Tk()
