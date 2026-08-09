@@ -27,13 +27,14 @@ SWP_NOMOVE = 0x0002
 SWP_NOACTIVATE = 0x0010
 SWP_SHOWWINDOW = 0x0040
 SWP_FRAMECHANGED = 0x0020
+WDA_EXCLUDEFROMCAPTURE = 0x00000011
 
 
 def set_window_transparent_and_topmost(screen_w: int, screen_h: int, click_through: bool = True) -> int | None:
     """
     Configures Pygame window on Windows to be 100% transparent background,
     pinned to HWND_TOPMOST above all opened apps/browsers, tool-window (no taskbar clutter),
-    and fully click-through.
+    fully click-through, and excluded from raw capture so screen recordings record real desktop content.
     """
     if sys.platform != "win32":
         return None
@@ -42,7 +43,11 @@ def set_window_transparent_and_topmost(screen_w: int, screen_h: int, click_throu
         if not hwnd:
             return None
 
+        GWL_STYLE = -16
         GWL_EXSTYLE = -20
+        WS_POPUP = 0x80000000
+        WS_VISIBLE = 0x10000000
+
         WS_EX_LAYERED = 0x00080000
         WS_EX_TOPMOST = 0x00000008
         WS_EX_TRANSPARENT = 0x00000020
@@ -50,14 +55,25 @@ def set_window_transparent_and_topmost(screen_w: int, screen_h: int, click_throu
         WS_EX_NOACTIVATE = 0x08000000
         LWA_COLORKEY = 0x00000001
 
-        style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-        new_style = style | WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
-        if click_through:
-            new_style |= WS_EX_TRANSPARENT
+        # Standard window style: popup + visible
+        style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_STYLE)
+        ctypes.windll.user32.SetWindowLongW(hwnd, GWL_STYLE, style | WS_POPUP | WS_VISIBLE)
 
-        ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, new_style)
-        # COLORREF 0x00010101 maps to RGB (1, 1, 1)
+        # Extended window style: layered + topmost + toolwindow + noactivate + transparent
+        ex_style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        new_ex_style = ex_style | WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
+        if click_through:
+            new_ex_style |= WS_EX_TRANSPARENT
+
+        ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, new_ex_style)
+        # COLORREF 0x00010101 maps to RGB (1, 1, 1) for transparency colorkey
         ctypes.windll.user32.SetLayeredWindowAttributes(hwnd, 0x00010101, 0, LWA_COLORKEY)
+
+        # Exclude transparent colorkey window from screen capture so recording captures the real desktop apps
+        try:
+            ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)
+        except Exception:
+            pass
 
         # Force window to top of all desktop windows and position at (0,0) with exact full screen size
         ctypes.windll.user32.SetWindowPos(
@@ -87,6 +103,11 @@ class GazeVisualizer:
         self.gaze_trail = []
         self.max_trail = config.GAZE_TRAIL_LENGTH
 
+        # Grace period memory for momentary eye blinks
+        self.last_gaze_px = (screen_w // 2, screen_h // 2)
+        self.lost_frames_count = 0
+        self.max_grace_frames = 15
+
         # Picture-in-Picture (PiP) settings
         self.show_camera_pip = config.ENABLE_CAMERA_PIP
         self.pip_w = config.PIP_WIDTH
@@ -100,7 +121,11 @@ class GazeVisualizer:
     def init_window(self) -> None:
         """Initializes Pygame transparent desktop overlay surface."""
         if not self.is_active:
-            os.environ['SDL_VIDEO_WINDOW_POS'] = '0,0'
+            os.environ["SDL_VIDEO_WINDOW_POS"] = "0,0"
+            os.environ["SDL_HINT_ALLOW_TOPMOST"] = "1"
+            os.environ["SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS"] = "0"
+            os.environ["SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH"] = "1"
+
             pygame.init()
             self.surface = pygame.display.set_mode(
                 (self.screen_w, self.screen_h),
@@ -169,8 +194,21 @@ class GazeVisualizer:
         x = int(np.clip(x, 15, self.screen_w - 15))
         y = int(np.clip(y, 15, self.screen_h - 15))
 
-        # Update Trail Buffer
+        # Update Gaze Position with Blink Grace Period
+        show_indicator = False
         if tracking_active:
+            self.last_gaze_px = (x, y)
+            self.lost_frames_count = 0
+            show_indicator = True
+        else:
+            self.lost_frames_count += 1
+            if self.lost_frames_count <= self.max_grace_frames:
+                # Hold last known position smoothly during momentary blinks/head shifts
+                x, y = self.last_gaze_px
+                show_indicator = True
+
+        # Update Trail Buffer
+        if show_indicator:
             self.gaze_trail.append((x, y))
             if len(self.gaze_trail) > self.max_trail:
                 self.gaze_trail.pop(0)
@@ -193,7 +231,7 @@ class GazeVisualizer:
                 pygame.draw.line(self.surface, trail_c, pt1, pt2, width)
 
         # 2. Draw Gaze Target Indicator
-        if tracking_active:
+        if show_indicator:
             # Outer cyan glow ring
             pygame.draw.circle(self.surface, (0, 180, 255), (x, y), config.DOT_RADIUS + 6, width=2)
             # Main cyan dot

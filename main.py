@@ -139,6 +139,7 @@ def main():
     print("=" * 60 + "\n")
 
     running = True
+    current_gaze_px = (screen_w // 2, screen_h // 2)
 
     try:
         while running:
@@ -170,8 +171,6 @@ def main():
                 confidence = compute_confidence(tracking_active, eye_data, pose_data)
 
             # C. Estimate Screen Gaze Position & Filter
-            gaze_px = (screen_w // 2, screen_h // 2)
-
             if tracking_active and iris_data is not None and pose_data is not None:
                 l_x = iris_data["left_iris_x"]
                 l_y = iris_data["left_iris_y"]
@@ -196,12 +195,14 @@ def main():
                 # Signal Noise Filtering (One Euro Filter)
                 smooth_gaze_x, smooth_gaze_y = smoother.update(raw_gaze_x, raw_gaze_y)
 
-                gaze_px = (
+                current_gaze_px = (
                     int(smooth_gaze_x * screen_w),
                     int(smooth_gaze_y * screen_h)
                 )
 
                 direction_text = compute_gaze_direction(smooth_gaze_x, smooth_gaze_y)
+
+            gaze_px = current_gaze_px
 
             # D. Render Pygame Screen Visualization Window (Gaze Circle, Trails, Camera PiP, Rec Badge)
             is_rec = recorder.is_recording()

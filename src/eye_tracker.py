@@ -24,7 +24,7 @@ class EyeTracker:
     RIGHT_EYE_BOTTOM = 374
     RIGHT_EYE_CONTOUR = [362, 398, 384, 385, 386, 387, 388, 466, 263, 249, 390, 373, 374, 380, 381, 382]
 
-    def __init__(self, ear_blink_threshold: float = 0.12):
+    def __init__(self, ear_blink_threshold: float = 0.08):
         self.ear_blink_threshold = ear_blink_threshold
 
     @staticmethod
@@ -78,7 +78,7 @@ class EyeTracker:
             "right_closed": right_closed,
             "left_contour": left_contour_pts,
             "right_contour": right_contour_pts,
-            "eyes_open": not (left_closed or right_closed)
+            "eyes_open": not (left_closed and right_closed)
         }
 
     def draw_eye_contours(
