@@ -19,6 +19,7 @@ from src.head_pose import HeadPoseEstimator
 from src.calibration import CalibrationManager
 from src.gaze_model import GazeRegressor
 from src.smoothing import GazeSmoother
+from src.recorder import ScreenSessionRecorder
 from src.visualization import (
     GazeVisualizer,
     DebugHUD,
@@ -114,11 +115,12 @@ def main():
     gaze_model.train(features_X, targets_Y)
     gaze_model.save()
 
-    # 4. Initialize Smoothing & Visualization Displays
+    # 4. Initialize Smoothing, Recording & Visualization Displays
     smoother = GazeSmoother()
     visualizer = GazeVisualizer(screen_w=screen_w, screen_h=screen_h)
     visualizer.init_window()
 
+    recorder = ScreenSessionRecorder()
     debug_hud = DebugHUD()
     fps_counter = FPSCounter()
 
@@ -129,9 +131,11 @@ def main():
     print("\n" + "=" * 60)
     print(" [STATUS] Gaze Tracking ACTIVE")
     print(" Controls in Camera Debug Window:")
-    print("   Q - Quit Application")
-    print("   C - Recalibrate 9-Point Grid")
-    print("   D - Toggle Diagnostic HUD")
+    print("   Q / ESC - Quit Application")
+    print("   R       - Start / Stop HD Video Recording (Desktop + Camera + Gaze)")
+    print("   P       - Toggle Live Camera Picture-in-Picture on Desktop")
+    print("   C       - Recalibrate 9-Point Grid")
+    print("   D       - Toggle Diagnostic HUD")
     print("=" * 60 + "\n")
 
     running = True
@@ -199,14 +203,36 @@ def main():
 
                 direction_text = compute_gaze_direction(smooth_gaze_x, smooth_gaze_y)
 
-            # D. Render Pygame Screen Visualization Window (Gaze Circle)
-            vis_ok = visualizer.render(gaze_px, direction_text, confidence, tracking_active)
+            # D. Render Pygame Screen Visualization Window (Gaze Circle, Trails, Camera PiP, Rec Badge)
+            is_rec = recorder.is_recording()
+            rec_dur = recorder.get_duration_str()
+
+            vis_ok = visualizer.render(
+                gaze_px,
+                direction_text,
+                confidence,
+                tracking_active,
+                camera_frame=frame,
+                is_recording=is_rec,
+                rec_duration_str=rec_dur
+            )
             if not vis_ok:
                 print("[INFO] User closed gaze screen window.")
                 running = False
                 break
 
-            # E. Render OpenCV Camera Debug Window
+            # E. Process & Composite Video Recording Frame (if recording active)
+            if is_rec:
+                recorder.process_and_record_frame(
+                    gaze_px=gaze_px,
+                    tracking_active=tracking_active,
+                    camera_frame=frame,
+                    confidence=confidence,
+                    direction_text=direction_text,
+                    fps=fps
+                )
+
+            # F. Render OpenCV Camera Debug Window
             debug_frame = debug_hud.render_debug_frame(
                 frame,
                 fps,
@@ -218,19 +244,31 @@ def main():
                 confidence,
                 eye_tracker,
                 iris_tracker,
-                head_pose_estimator
+                head_pose_estimator,
+                is_recording=is_rec,
+                rec_duration_str=rec_dur,
+                pip_active=visualizer.show_camera_pip
             )
 
             cv2.imshow(window_name, debug_frame)
 
-            # F. Handle Hotkey Controls
+            # G. Handle Hotkey Controls
             key = cv2.waitKey(1) & 0xFF
             if key in (config.HOTKEY_QUIT, 27):  # 'q' or ESC
                 print("[INFO] Quit key pressed.")
                 running = False
                 break
-            elif key == config.HOTKEY_CALIBRATE:  # 'c'
+            elif key in (config.HOTKEY_RECORD_TOGGLE, ord('R')):  # 'r' or 'R'
+                is_now_recording = recorder.toggle_recording(screen_w, screen_h)
+                state_str = "STARTED" if is_now_recording else "STOPPED"
+                print(f"[INFO] Video Recording {state_str}")
+            elif key in (config.HOTKEY_PIP_TOGGLE, ord('P')):  # 'p' or 'P'
+                visualizer.toggle_pip()
+            elif key in (config.HOTKEY_CALIBRATE, ord('C')):  # 'c' or 'C'
                 print("\n[INFO] Recalibration requested via hotkey...")
+                if recorder.is_recording():
+                    recorder.stop_recording()
+
                 visualizer.close()
                 cv2.destroyWindow(window_name)
 
@@ -252,7 +290,7 @@ def main():
                 cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
                 cv2.resizeWindow(window_name, config.FRAME_WIDTH, config.FRAME_HEIGHT)
 
-            elif key == config.HOTKEY_DEBUG_TOGGLE:  # 'd'
+            elif key in (config.HOTKEY_DEBUG_TOGGLE, ord('D')):  # 'd' or 'D'
                 debug_hud.show_debug_info = not debug_hud.show_debug_info
                 print(f"[INFO] Diagnostic HUD toggled: {'ON' if debug_hud.show_debug_info else 'OFF'}")
 
@@ -260,6 +298,8 @@ def main():
         print("\n[INFO] Interrupted by user.")
     finally:
         print("[INFO] Shutting down AI Eye Gaze Tracker...")
+        if recorder.is_recording():
+            recorder.stop_recording()
         visualizer.close()
         cv2.destroyAllWindows()
         face_tracker.close()

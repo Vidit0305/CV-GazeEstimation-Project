@@ -11,3 +11,6 @@ scikit-learn>=1.3.0
 
 # Screen Graphics & Interactive Visualization Window
 pygame>=2.5.0
+
+# High-Performance Screen Capture & Session Recording
+mss>=10.0.0

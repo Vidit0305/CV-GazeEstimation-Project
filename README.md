@@ -101,15 +101,26 @@ python main.py
 
 ## 🎮 Controls & Keyboard Shortcuts
 
-When the OpenCV Camera Debug Window is active:
+When the application is running:
 
 | Key | Action |
 |---|---|
-| `Q` / `ESC` | **Quit** the application cleanly |
+| `R` | **Start / Stop HD Screen & Camera Session Recording** (saved to `recordings/` as `.mp4`) |
+| `P` | **Toggle Live Camera Picture-in-Picture (PiP)** preview on the desktop screen |
 | `C` | Trigger **Recalibration** routine (launches 9-point grid) |
 | `D` | Toggle **Diagnostic HUD** overlay in camera window |
+| `Q` / `ESC` | **Quit** the application cleanly (safely finalizes any ongoing recording) |
 
 ---
+
+## 📹 Full Screen & Camera Session Recording
+
+The AI Eye Gaze Tracker includes a built-in asynchronous session video recorder:
+* **Desktop Screen Capture**: Captures your real active screen, open applications, websites, and coding windows at high FPS.
+* **Eye Gaze Visuals**: Overlays the glowing gaze target circle and smooth fading gaze trails.
+* **Camera Picture-in-Picture (PiP)**: Overlays your live face webcam feed in the corner with real-time tracking confidence and face status badges.
+* **Live Status Badge**: Displays a `● REC [00:15]` timer in both the desktop overlay and recorded video.
+* **Automatic Storage**: Video files are automatically encoded in MP4 format and saved directly to the `recordings/` folder with timestamps (e.g. `recordings/gaze_session_YYYY-MM-DD_HH-MM-SS.mp4`).
 
 ## 🔬 Mathematical Architecture
 

@@ -1,11 +1,14 @@
 """
 Visualization and Debug HUD Module.
 Provides dual visual displays:
-1. GazeVisualizer: Transparent desktop overlay Pygame window showing gaze circle movement over your real laptop screen.
-2. DebugHUD: OpenCV webcam feed overlay showing facial landmarks, head pose axes, FPS, and tracking metrics.
+1. GazeVisualizer: Transparent desktop overlay Pygame window showing gaze circle movement,
+   gaze trails, optional live camera Picture-in-Picture (PiP), and recording status.
+2. DebugHUD: OpenCV webcam feed overlay showing facial landmarks, head pose axes, FPS,
+   recording status, and tracking metrics.
 """
 
 import sys
+import time
 import ctypes
 import cv2
 import numpy as np
@@ -20,7 +23,7 @@ TRANSPARENT_COLORKEY = (1, 1, 1)
 def set_window_transparent_and_topmost(click_through: bool = True) -> bool:
     """
     Configures Pygame window on Windows to be 100% transparent background,
-    top-most above all desktop windows, and optionally click-through.
+    top-most above all desktop windows, tool-window (no taskbar clutter), and optionally click-through.
     """
     if sys.platform != "win32":
         return False
@@ -33,10 +36,12 @@ def set_window_transparent_and_topmost(click_through: bool = True) -> bool:
         WS_EX_LAYERED = 0x80000
         WS_EX_TOPMOST = 0x8
         WS_EX_TRANSPARENT = 0x20
+        WS_EX_TOOLWINDOW = 0x80
+        WS_EX_NOACTIVATE = 0x08000000
         LWA_COLORKEY = 0x1
 
         style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-        new_style = style | WS_EX_LAYERED | WS_EX_TOPMOST
+        new_style = style | WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
         if click_through:
             new_style |= WS_EX_TRANSPARENT
 
@@ -50,13 +55,27 @@ def set_window_transparent_and_topmost(click_through: bool = True) -> bool:
 
 
 class GazeVisualizer:
-    """Renders transparent screen gaze target overlay directly on top of your laptop desktop."""
+    """Renders transparent screen gaze target overlay, gaze trails, and Camera PiP directly on desktop."""
 
     def __init__(self, screen_w: int, screen_h: int):
         self.screen_w = screen_w
         self.screen_h = screen_h
         self.surface = None
         self.is_active = False
+
+        # Gaze trail history
+        self.gaze_trail = []
+        self.max_trail = config.GAZE_TRAIL_LENGTH
+
+        # Picture-in-Picture (PiP) settings
+        self.show_camera_pip = config.ENABLE_CAMERA_PIP
+        self.pip_w = config.PIP_WIDTH
+        self.pip_h = config.PIP_HEIGHT
+        self.pip_pad = config.PIP_PADDING
+        self.pip_pos = config.PIP_POSITION
+
+        self.font_rec = None
+        self.font_pip = None
 
     def init_window(self) -> None:
         """Initializes Pygame transparent desktop overlay surface."""
@@ -66,24 +85,34 @@ class GazeVisualizer:
                 (self.screen_w, self.screen_h),
                 pygame.NOFRAME | pygame.DOUBLEBUF
             )
-            pygame.display.set_caption("AI Eye Gaze Tracker - Transparent Overlay")
+            pygame.display.set_caption("AI Eye Gaze Tracker - Transparent Desktop Overlay")
 
             # Enable Windows desktop window transparency & click-through
             set_window_transparent_and_topmost(click_through=True)
 
-            self.font_dir = pygame.font.SysFont("arial", 20, bold=True)
-            self.font_info = pygame.font.SysFont("consolas", 14)
+            self.font_rec = pygame.font.SysFont("arial", 15, bold=True)
+            self.font_pip = pygame.font.SysFont("consolas", 12, bold=True)
             self.is_active = True
+
+    def toggle_pip(self) -> bool:
+        """Toggles camera Picture-in-Picture overlay on desktop."""
+        self.show_camera_pip = not self.show_camera_pip
+        print(f"[INFO] Camera Picture-in-Picture overlay: {'ENABLED' if self.show_camera_pip else 'DISABLED'}")
+        return self.show_camera_pip
 
     def render(
         self,
         gaze_px: tuple[int, int],
         direction_text: str,
         confidence: float,
-        tracking_active: bool
+        tracking_active: bool,
+        camera_frame: np.ndarray | None = None,
+        is_recording: bool = False,
+        rec_duration_str: str = "00:00"
     ) -> bool:
         """
-        Renders gaze circle target directly over your laptop desktop screen.
+        Renders gaze circle target, smooth trails, camera PiP, and recording badge
+        directly over your laptop desktop screen.
         Returns False if user requested quit.
         """
         if not self.is_active or self.surface is None:
@@ -96,6 +125,8 @@ class GazeVisualizer:
             elif event.type == pygame.KEYDOWN:
                 if event.key in (pygame.K_ESCAPE, pygame.K_q):
                     return False
+                elif event.key == pygame.K_p:
+                    self.toggle_pip()
 
         # Fill with Transparent ColorKey (Makes background 100% invisible on desktop)
         self.surface.fill(TRANSPARENT_COLORKEY)
@@ -104,19 +135,123 @@ class GazeVisualizer:
         x = int(np.clip(x, 15, self.screen_w - 15))
         y = int(np.clip(y, 15, self.screen_h - 15))
 
+        # Update Trail Buffer
         if tracking_active:
-            # Draw Gaze Circle Indicator over your desktop
+            self.gaze_trail.append((x, y))
+            if len(self.gaze_trail) > self.max_trail:
+                self.gaze_trail.pop(0)
+        else:
+            if self.gaze_trail:
+                self.gaze_trail.pop(0)
+
+        # 1. Draw Smooth Gaze Trails
+        if len(self.gaze_trail) > 1:
+            for i in range(len(self.gaze_trail) - 1):
+                pt1 = self.gaze_trail[i]
+                pt2 = self.gaze_trail[i + 1]
+                factor = (i + 1) / float(len(self.gaze_trail))
+                trail_c = (
+                    int(0 * factor + 100 * (1 - factor)),
+                    int(220 * factor),
+                    int(255 * factor)
+                )
+                width = int(1 + 3 * factor)
+                pygame.draw.line(self.surface, trail_c, pt1, pt2, width)
+
+        # 2. Draw Gaze Target Indicator
+        if tracking_active:
+            # Outer cyan glow ring
             pygame.draw.circle(self.surface, (0, 180, 255), (x, y), config.DOT_RADIUS + 6, width=2)
+            # Main cyan dot
             pygame.draw.circle(self.surface, config.DOT_COLOR, (x, y), config.DOT_RADIUS)
+            # Center bright dot
             pygame.draw.circle(self.surface, config.DOT_BORDER_COLOR, (x, y), 4)
 
-            # Draw crosshair lines
+            # Crosshairs
             line_color = (255, 255, 255)
-            pygame.draw.line(self.surface, line_color, (x - 18, y), (x + 18, y), 1)
-            pygame.draw.line(self.surface, line_color, (x, y - 18), (x, y + 18), 1)
+            pygame.draw.line(self.surface, line_color, (x - 18, y), (x - 6, y), 2)
+            pygame.draw.line(self.surface, line_color, (x + 6, y), (x + 18, y), 2)
+            pygame.draw.line(self.surface, line_color, (x, y - 18), (x, y - 6), 2)
+            pygame.draw.line(self.surface, line_color, (x, y + 6), (x, y + 18), 2)
+
+        # 3. Draw Live Camera Picture-in-Picture (PiP) on Desktop
+        if self.show_camera_pip and camera_frame is not None:
+            self._render_camera_pip_overlay(camera_frame, tracking_active, confidence)
+
+        # 4. Draw Recording Status Badge on Desktop
+        if is_recording:
+            self._render_rec_badge(rec_duration_str)
 
         pygame.display.flip()
         return True
+
+    def _render_camera_pip_overlay(
+        self,
+        camera_frame: np.ndarray,
+        tracking_active: bool,
+        confidence: float
+    ) -> None:
+        """Renders live webcam feed inside desktop overlay surface."""
+        pw, ph = self.pip_w, self.pip_h
+        pad = self.pip_pad
+
+        if self.pip_pos == "bottom_right":
+            px, py = self.screen_w - pw - pad, self.screen_h - ph - pad
+        elif self.pip_pos == "top_right":
+            px, py = self.screen_w - pw - pad, pad + 40
+        elif self.pip_pos == "bottom_left":
+            px, py = pad, self.screen_h - ph - pad
+        else:
+            px, py = pad, pad + 40
+
+        try:
+            # Resize and convert OpenCV BGR frame to Pygame RGB
+            resized_cam = cv2.resize(camera_frame, (pw, ph), interpolation=cv2.INTER_AREA)
+            cam_rgb = cv2.cvtColor(resized_cam, cv2.COLOR_BGR2RGB)
+            cam_surface = pygame.image.frombuffer(cam_rgb.tobytes(), (pw, ph), "RGB")
+
+            # Draw card header backdrop
+            header_rect = pygame.Rect(px - 2, py - 20, pw + 4, 20)
+            pygame.draw.rect(self.surface, (20, 26, 36), header_rect)
+
+            # Blit camera image
+            self.surface.blit(cam_surface, (px, py))
+
+            # Border
+            border_color = (0, 230, 140) if tracking_active else (220, 70, 70)
+            pygame.draw.rect(self.surface, border_color, pygame.Rect(px, py, pw, ph), 2)
+            pygame.draw.rect(self.surface, (70, 90, 120), header_rect, 1)
+
+            # Header text
+            if self.font_pip:
+                title_surf = self.font_pip.render("WEBCAM [P]", True, (0, 220, 255))
+                self.surface.blit(title_surf, (px + 4, py - 17))
+
+                stat_text = f"{confidence:.0f}%" if tracking_active else "LOST"
+                stat_surf = self.font_pip.render(stat_text, True, border_color)
+                self.surface.blit(stat_surf, (px + pw - stat_surf.get_width() - 4, py - 17))
+        except Exception:
+            pass
+
+    def _render_rec_badge(self, rec_duration_str: str) -> None:
+        """Renders live recording indicator at top-left of desktop."""
+        bx, by, bw, bh = 20, 20, 160, 30
+
+        # Background badge
+        badge_rect = pygame.Rect(bx, by, bw, bh)
+        pygame.draw.rect(self.surface, (18, 22, 30), badge_rect)
+        pygame.draw.rect(self.surface, (70, 85, 110), badge_rect, 1)
+
+        # Pulsing red circle
+        pulse = (int(time.time() * 2) % 2) == 0
+        dot_c = (255, 40, 40) if pulse else (180, 20, 20)
+        pygame.draw.circle(self.surface, dot_c, (bx + 16, by + bh // 2), 6)
+        pygame.draw.circle(self.surface, (255, 255, 255), (bx + 16, by + bh // 2), 7, 1)
+
+        # Text
+        if self.font_rec:
+            rec_surf = self.font_rec.render(f"REC  {rec_duration_str}", True, (240, 245, 255))
+            self.surface.blit(rec_surf, (bx + 30, by + 6))
 
     def close(self) -> None:
         """Closes Pygame visualization window."""
@@ -126,7 +261,7 @@ class GazeVisualizer:
 
 
 class DebugHUD:
-    """Manages OpenCV webcam overlay visualization and compact diagnostic HUD panel."""
+    """Manages OpenCV webcam overlay visualization and diagnostic HUD panel."""
 
     def __init__(self):
         self.show_debug_info = True
@@ -143,9 +278,12 @@ class DebugHUD:
         confidence: float,
         eye_tracker,
         iris_tracker,
-        head_pose_estimator
+        head_pose_estimator,
+        is_recording: bool = False,
+        rec_duration_str: str = "00:00",
+        pip_active: bool = True
     ) -> np.ndarray:
-        """Draws landmarks, head pose vectors, and stats HUD overlay on camera frame."""
+        """Draws landmarks, head pose vectors, recording badge, and stats HUD overlay on camera frame."""
         output_frame = frame.copy()
 
         # Draw Landmarks if tracking active
@@ -157,7 +295,18 @@ class DebugHUD:
 
         # Draw Compact HUD Panel if enabled
         if self.show_debug_info:
-            self._draw_status_panel(output_frame, fps, tracking_active, eye_data, iris_data, direction_text, confidence)
+            self._draw_status_panel(
+                output_frame,
+                fps,
+                tracking_active,
+                eye_data,
+                iris_data,
+                direction_text,
+                confidence,
+                is_recording,
+                rec_duration_str,
+                pip_active
+            )
 
         return output_frame
 
@@ -169,23 +318,26 @@ class DebugHUD:
         eye_data: dict | None,
         iris_data: dict | None,
         direction_text: str,
-        confidence: float
+        confidence: float,
+        is_recording: bool,
+        rec_duration_str: str,
+        pip_active: bool
     ) -> None:
         """Renders small, sleek diagnostic HUD badge on top-left of webcam view."""
         h, w, _ = frame.shape
-        panel_w = 190
-        panel_h = 135
+        panel_w = 210
+        panel_h = 172
 
         # Semi-transparent background card
         overlay = frame.copy()
         cv2.rectangle(overlay, (8, 8), (8 + panel_w, 8 + panel_h), (12, 15, 22), -1)
-        cv2.addWeighted(overlay, 0.72, frame, 0.28, 0, frame)
+        cv2.addWeighted(overlay, 0.75, frame, 0.25, 0, frame)
 
         # Border
         cv2.rectangle(frame, (8, 8), (8 + panel_w, 8 + panel_h), (50, 65, 85), 1)
 
         # Header Title
-        cv2.putText(frame, "AI EYE GAZE", (16, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 220, 255), 1, cv2.LINE_AA)
+        cv2.putText(frame, "AI EYE GAZE TRACKER", (16, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 220, 255), 1, cv2.LINE_AA)
         cv2.line(frame, (16, 28), (8 + panel_w - 8, 28), (40, 55, 75), 1)
 
         # Status indicators
@@ -194,29 +346,34 @@ class DebugHUD:
         track_status = "ACTIVE" if tracking_active else "LOST"
         track_color = (0, 230, 140) if tracking_active else (50, 50, 255)
 
+        rec_status = f"REC [{rec_duration_str}]" if is_recording else "IDLE"
+        rec_color = (40, 40, 255) if is_recording else (140, 150, 165)
+
+        pip_status = "ON (Desktop)" if pip_active else "OFF"
+        pip_color = (0, 220, 255) if pip_active else (140, 150, 165)
+
         lines = [
-            f"FPS: {fps:.1f}",
-            f"Face/Iris: {face_status}/{iris_status}",
-            f"Gaze: {direction_text}",
-            f"Confidence: {confidence:.0f}%",
-            f"Status: {track_status}"
+            (f"FPS: {fps:.1f}", (220, 225, 235)),
+            (f"Face/Iris: {face_status}/{iris_status}", (220, 225, 235)),
+            (f"Gaze: {direction_text}", (220, 225, 235)),
+            (f"Confidence: {confidence:.0f}%", (220, 225, 235)),
+            (f"Status: {track_status}", track_color),
+            (f"Video REC: {rec_status}", rec_color),
+            (f"Camera PiP: {pip_status}", pip_color)
         ]
 
         y = 44
-        for line in lines:
-            color = (220, 225, 235)
-            if "Status:" in line:
-                color = track_color
-            cv2.putText(frame, line, (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.38, color, 1, cv2.LINE_AA)
+        for text, color in lines:
+            cv2.putText(frame, text, (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.36, color, 1, cv2.LINE_AA)
             y += 18
 
         # Footer guide
         draw_text_with_bg(
             frame,
-            "[Q] Quit | [C] Recalibrate | [D] HUD",
+            "[Q] Quit | [C] Recalib | [D] HUD | [R] Record | [P] PiP",
             (8, h - 12),
-            font_scale=0.40,
-            text_color=(200, 210, 230),
+            font_scale=0.38,
+            text_color=(200, 215, 240),
             bg_color=(15, 20, 30)
         )
 
@@ -270,3 +427,4 @@ def compute_confidence(
             conf -= (pitch - 25.0) * 1.5
 
     return float(np.clip(conf, 0.0, 100.0))
+
